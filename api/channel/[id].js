@@ -1,35 +1,22 @@
 export default async function handler(req, res) {
-  const { id } = req.query;
-
-  if (!id) {
-    return res.status(400).json({
-      error: "Missing channel ID"
-    });
-  }
-
   try {
-    const response = await fetch(
-      `http://def.ycnapi.com/api/channel/${encodeURIComponent(id)}`
-    );
+    const url = `http://def.ycnapi.com/api/channel/${req.query.id}`;
 
-    if (!response.ok) {
-      return res.status(502).json({
-        error: "Upstream API error",
-        status: response.status
-      });
-    }
+    const response = await fetch(url);
 
-    const data = await response.text();
+    const text = await response.text();
 
-    res.setHeader("Content-Type", "text/plain; charset=utf-8");
-    res.setHeader("Cache-Control", "no-store");
-
-    return res.status(200).send(data);
+    return res.status(200).json({
+      status: response.status,
+      contentType: response.headers.get("content-type"),
+      contentLength: text.length,
+      preview: text.substring(0, 100),
+      data: text
+    });
 
   } catch (error) {
     return res.status(500).json({
-      error: "Server error",
-      message: error.message
+      error: error.message
     });
   }
 }
