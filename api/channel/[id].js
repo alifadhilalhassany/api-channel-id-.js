@@ -14,30 +14,17 @@ export default async function handler(req, res) {
 
     if (!response.ok) {
       return res.status(502).json({
-        error: "Upstream API error"
+        error: "Upstream API error",
+        status: response.status
       });
     }
 
-    const data = await response.json();
+    const data = await response.text();
 
-    // إذا كان الـAPI يرجع رابط M3U8 مباشرة
-    const m3u8 =
-      data.m3u8 ||
-      data.url ||
-      data.stream ||
-      data.stream_url;
-
-    if (!m3u8) {
-      return res.status(422).json({
-        error: "No M3U8 URL found in API response",
-        response: data
-      });
-    }
-
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.setHeader("Cache-Control", "no-store");
-    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
 
-    return res.status(200).send(m3u8);
+    return res.status(200).send(data);
 
   } catch (error) {
     return res.status(500).json({
