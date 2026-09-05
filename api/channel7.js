@@ -9,132 +9,75 @@ const USER_AGENT =
 const REFERER = "https://x.com/";
 
 function decrypt(base64, key) {
-  const buffer = Buffer.from(
-    base64.trim(),
-    "base64"
-  );
-
-  let output = "";
+  const buffer = Buffer.from(base64.trim(), "base64");
+  let result = "";
 
   for (let i = 0; i < buffer.length; i++) {
-    output += String.fromCharCode(
-      buffer[i] ^
-      key.charCodeAt(i % key.length)
+    result += String.fromCharCode(
+      buffer[i] ^ key.charCodeAt(i % key.length)
     );
   }
 
-  return output;
+  return result;
 }
 
 export default async function handler(req, res) {
-
   try {
+    const channelId = req.query?.id || "4";
 
-    const channelId =
-      req.query?.id || "4";
-
-    // ================================
-    // API
-    // ================================
-
-    const apiUrl =
-      `${API_BASE}/api/channel/${encodeURIComponent(channelId)}`;
-
+    // 1. جلب API
     const apiResponse = await fetch(
-      apiUrl,
+      `${API_BASE}/api/channel/${encodeURIComponent(channelId)}`,
       {
-        method: "GET",
-
         headers: {
           "User-Agent": USER_AGENT,
           "Accept": "*/*"
         },
-
         cache: "no-store"
       }
     );
 
-    const encrypted =
-      await apiResponse.text();
+    const encrypted = await apiResponse.text();
 
     if (!apiResponse.ok) {
-
       return res.status(200).json({
         success: false,
         step: "API",
-        status: apiResponse.status,
-        error: encrypted.substring(0, 300)
+        status: apiResponse.status
       });
-
     }
 
-    // ================================
-    // Header t
-    // ================================
-
+    // 2. Header t
     const timestamp =
       apiResponse.headers.get("t");
 
     if (!timestamp) {
-
       return res.status(200).json({
         success: false,
         step: "HEADER",
         error: "Header t غير موجود"
       });
-
     }
 
-    // ================================
-    // فك التشفير
-    // ================================
-
-    let decrypted;
-
-    try {
-
-      decrypted = decrypt(
-        encrypted,
-        XOR_KEY + timestamp
-      );
-
-    } catch (error) {
-
-      return res.status(200).json({
-        success: false,
-        step: "DECRYPT",
-        error: error.message
-      });
-
-    }
-
-    // ================================
-    // JSON
-    // ================================
+    // 3. فك البيانات
+    const decrypted = decrypt(
+      encrypted,
+      XOR_KEY + timestamp
+    );
 
     let data;
 
     try {
-
-      data = JSON.parse(
-        decrypted
-      );
-
-    } catch (error) {
-
+      data = JSON.parse(decrypted);
+    } catch {
       return res.status(200).json({
         success: false,
         step: "JSON",
-        error: error.message,
         preview: decrypted.substring(0, 300)
       });
-
     }
 
-    // ================================
-    // استخراج الرابط
-    // ================================
-
+    // 4. استخراج الرابط
     const channel =
       data?.data?.[0] ||
       data?.data ||
@@ -147,181 +90,116 @@ export default async function handler(req, res) {
       channel?.stream ||
       channel?.link;
 
-    if (
-      typeof redirectUrl !== "string"
-    ) {
-
+    if (!redirectUrl) {
       return res.status(200).json({
         success: false,
         step: "URL",
-        error: "لم يتم العثور على رابط",
-        data: data
+        error: "رابط القناة غير موجود"
       });
-
     }
 
-    // ================================
-    // Redirect
-    // ================================
+    // 5. الحصول على الرابط النهائي
+    const redirectResponse = await fetch(
+      redirectUrl,
+      {
+        redirect: "manual",
+        headers: {
+          "User-Agent": USER_AGENT,
+          "Referer": REFERER,
+          "Accept": "*/*"
+        },
+        cache: "no-store"
+      }
+    );
 
-    let redirectResponse;
+    const finalUrl =
+      redirectResponse.headers.get("location");
 
-    try {
-
-      redirectResponse =
-        await fetch(
-          redirectUrl,
-          {
-            method: "GET",
-
-            redirect: "manual",
-
-            headers: {
-              "User-Agent": USER_AGENT,
-              "Referer": REFERER,
-              "Accept": "*/*"
-            },
-
-            cache: "no-store"
-          }
-        );
-
-    } catch (error) {
-
+    if (!finalUrl) {
       return res.status(200).json({
         success: false,
         step: "REDIRECT",
-        url: redirectUrl,
-        error: error.message
+        status: redirectResponse.status
+      });
+    }
+
+    // 6. جلب الـM3U8 نفسه
+    const playlistResponse = await fetch(
+      finalUrl,
+      {
+        headers: {
+          "User-Agent": USER_AGENT,
+          "Referer": REFERER,
+          "Accept": "*/*"
+        },
+        cache: "no-store"
+      }
+    );
+
+    const playlistText =
+      await playlistResponse.text();
+
+    // 7. استخراج أول روابط من الـplaylist
+    const lines =
+      playlistText
+        .split(/\r?\n/)
+        .map(x => x.trim())
+        .filter(x => x && !x.startsWith("#"));
+
+    const playlistBase =
+      new URL(finalUrl);
+
+    const segmentUrls =
+      lines.slice(0, 5).map(line => {
+        try {
+          return new URL(
+            line,
+            playlistBase
+          ).href;
+        } catch {
+          return line;
+        }
       });
 
+    // 8. اختبار أول segment
+    let segmentTest = null;
+
+    if (segmentUrls.length > 0) {
+      try {
+        const segmentResponse =
+          await fetch(
+            segmentUrls[0],
+            {
+              headers: {
+                "User-Agent": USER_AGENT,
+                "Referer": REFERER,
+                "Accept": "*/*"
+              },
+              cache: "no-store"
+            }
+          );
+
+        segmentTest = {
+          url: segmentUrls[0],
+          status: segmentResponse.status,
+          content_type:
+            segmentResponse.headers.get(
+              "content-type"
+            ),
+          content_length:
+            segmentResponse.headers.get(
+              "content-length"
+            )
+        };
+
+      } catch (error) {
+        segmentTest = {
+          error: error.message
+        };
+      }
     }
 
-    const finalUrl =
-      redirectResponse.headers.get(
-        "location"
-      );
-
-    if (!finalUrl) {
-
-      return res.status(200).json({
-        success: false,
-        step: "LOCATION",
-        status: redirectResponse.status,
-        url: redirectUrl,
-        error: "السيرفر لم يرجع Location"
-      });
-
-    }
-
-    // ================================
-    // اختبار الرابط النهائي
-    // ================================
-
-    let finalResponse;
-
-    try {
-
-      finalResponse =
-        await fetch(
-          finalUrl,
-          {
-            method: "GET",
-
-            redirect: "manual",
-
-            headers: {
-              "User-Agent": USER_AGENT,
-              "Referer": REFERER,
-              "Accept": "*/*"
-            },
-
-            cache: "no-store"
-          }
-        );
-
-    } catch (error) {
-
-      return res.status(200).json({
-        success: false,
-        step: "FINAL_REQUEST",
-        final_url: finalUrl,
-        error: error.message
-      });
-
-    }
-
-    // ================================
-    // Headers
-    // ================================
-
-    const contentType =
-      finalResponse.headers.get(
-        "content-type"
-      );
-
-    const server =
-      finalResponse.headers.get(
-        "server"
-      );
-
-    const cfRay =
-      finalResponse.headers.get(
-        "cf-ray"
-      );
-
-    // ================================
-    // النتيجة
-    // ================================
-
-    let diagnosis;
-
-    if (
-      finalResponse.status === 200
-    ) {
-
-      diagnosis =
-        "الرابط النهائي يرجع HTTP 200";
-
-    } else if (
-      finalResponse.status === 403
-    ) {
-
-      diagnosis =
-        "السيرفر رفض الطلب HTTP 403";
-
-    } else if (
-      finalResponse.status === 521
-    ) {
-
-      diagnosis =
-        "Cloudflare لا يستطيع الوصول إلى Origin - HTTP 521";
-
-    } else if (
-      finalResponse.status === 522
-    ) {
-
-      diagnosis =
-        "Cloudflare timeout - HTTP 522";
-
-    } else if (
-      finalResponse.status === 523
-    ) {
-
-      diagnosis =
-        "Cloudflare لا يستطيع الوصول إلى Origin - HTTP 523";
-
-    } else {
-
-      diagnosis =
-        `HTTP ${finalResponse.status}`;
-
-    }
-
-    // ================================
-    // CORS + Cache
-    // ================================
-
+    // 9. النتيجة
     res.setHeader(
       "Access-Control-Allow-Origin",
       "*"
@@ -332,59 +210,42 @@ export default async function handler(req, res) {
       "no-store"
     );
 
-    // ================================
-    // Response
-    // ================================
-
     return res.status(200).json({
-
       success:
-        finalResponse.status === 200,
+        playlistResponse.status === 200,
 
       channel_id:
         String(channelId),
 
-      redirect_url:
-        redirectUrl,
-
       final_url:
         finalUrl,
 
-      final_status:
-        finalResponse.status,
+      playlist_status:
+        playlistResponse.status,
 
-      content_type:
-        contentType,
+      playlist_content_type:
+        playlistResponse.headers.get(
+          "content-type"
+        ),
 
-      server:
-        server,
+      playlist_preview:
+        playlistText.substring(0, 1000),
 
-      cloudflare_ray:
-        cfRay,
+      segment_count:
+        lines.length,
 
-      diagnosis:
-        diagnosis
+      first_segments:
+        segmentUrls,
 
+      segment_test:
+        segmentTest
     });
 
   } catch (error) {
-
     return res.status(200).json({
-
       success: false,
-
-      step: "UNKNOWN",
-
-      error:
-        error?.message ||
-        String(error),
-
-      stack:
-        error?.stack ||
-        null
-
+      step: "ERROR",
+      error: error.message
     });
-
   }
-
 }
