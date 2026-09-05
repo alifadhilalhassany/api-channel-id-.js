@@ -9,93 +9,131 @@ const USER_AGENT =
 const REFERER = "https://x.com/";
 
 function decrypt(base64, key) {
-  const buffer = Buffer.from(base64.trim(), "base64");
-  let result = "";
+  const buffer = Buffer.from(
+    base64.trim(),
+    "base64"
+  );
+
+  let output = "";
 
   for (let i = 0; i < buffer.length; i++) {
-    result += String.fromCharCode(
-      buffer[i] ^ key.charCodeAt(i % key.length)
+    output += String.fromCharCode(
+      buffer[i] ^
+      key.charCodeAt(i % key.length)
     );
   }
 
-  return result;
+  return output;
 }
 
 export default async function handler(req, res) {
-  try {
-    const channelId = req.query.id || "4";
 
-    // =========================================
-    // 1. جلب بيانات القناة
-    // =========================================
+  try {
+
+    const channelId =
+      req.query?.id || "4";
+
+    // ================================
+    // API
+    // ================================
+
+    const apiUrl =
+      `${API_BASE}/api/channel/${encodeURIComponent(channelId)}`;
 
     const apiResponse = await fetch(
-      `${API_BASE}/api/channel/${encodeURIComponent(channelId)}`,
+      apiUrl,
       {
         method: "GET",
+
         headers: {
           "User-Agent": USER_AGENT,
           "Accept": "*/*"
         },
+
         cache: "no-store"
       }
     );
 
+    const encrypted =
+      await apiResponse.text();
+
     if (!apiResponse.ok) {
-      return res.status(502).json({
+
+      return res.status(200).json({
         success: false,
-        step: "api",
+        step: "API",
         status: apiResponse.status,
-        error: "فشل الاتصال بـ API"
+        error: encrypted.substring(0, 300)
       });
+
     }
 
-    // =========================================
-    // 2. قراءة Header t
-    // =========================================
+    // ================================
+    // Header t
+    // ================================
 
     const timestamp =
-      apiResponse.headers.get("t") ||
-      apiResponse.headers.get("T");
+      apiResponse.headers.get("t");
 
     if (!timestamp) {
-      return res.status(502).json({
+
+      return res.status(200).json({
         success: false,
-        step: "timestamp",
+        step: "HEADER",
         error: "Header t غير موجود"
       });
+
     }
 
-    // =========================================
-    // 3. قراءة البيانات المشفرة
-    // =========================================
+    // ================================
+    // فك التشفير
+    // ================================
 
-    const encrypted = await apiResponse.text();
+    let decrypted;
 
-    // =========================================
-    // 4. فك Base64 + XOR
-    // =========================================
+    try {
 
-    const decrypted = decrypt(
-      encrypted,
-      XOR_KEY + timestamp
-    );
+      decrypted = decrypt(
+        encrypted,
+        XOR_KEY + timestamp
+      );
+
+    } catch (error) {
+
+      return res.status(200).json({
+        success: false,
+        step: "DECRYPT",
+        error: error.message
+      });
+
+    }
+
+    // ================================
+    // JSON
+    // ================================
 
     let data;
 
     try {
-      data = JSON.parse(decrypted);
-    } catch {
-      return res.status(502).json({
+
+      data = JSON.parse(
+        decrypted
+      );
+
+    } catch (error) {
+
+      return res.status(200).json({
         success: false,
-        step: "decrypt",
-        error: "فشل فك JSON"
+        step: "JSON",
+        error: error.message,
+        preview: decrypted.substring(0, 300)
       });
+
     }
 
-    // =========================================
-    // 5. استخراج الرابط
-    // =========================================
+    // ================================
+    // استخراج الرابط
+    // ================================
 
     const channel =
       data?.data?.[0] ||
@@ -110,223 +148,243 @@ export default async function handler(req, res) {
       channel?.link;
 
     if (
-      typeof redirectUrl !== "string" ||
-      !redirectUrl.startsWith("http")
+      typeof redirectUrl !== "string"
     ) {
-      return res.status(404).json({
+
+      return res.status(200).json({
         success: false,
-        step: "url",
-        error: "لم يتم العثور على رابط القناة"
+        step: "URL",
+        error: "لم يتم العثور على رابط",
+        data: data
       });
+
     }
 
-    // =========================================
-    // 6. طلب الـ Redirect
-    // =========================================
+    // ================================
+    // Redirect
+    // ================================
 
-    const redirectResponse = await fetch(
-      redirectUrl,
-      {
-        method: "GET",
-        redirect: "manual",
-        headers: {
-          "User-Agent": USER_AGENT,
-          "Referer": REFERER,
-          "Accept": "*/*"
-        },
-        cache: "no-store"
-      }
-    );
+    let redirectResponse;
+
+    try {
+
+      redirectResponse =
+        await fetch(
+          redirectUrl,
+          {
+            method: "GET",
+
+            redirect: "manual",
+
+            headers: {
+              "User-Agent": USER_AGENT,
+              "Referer": REFERER,
+              "Accept": "*/*"
+            },
+
+            cache: "no-store"
+          }
+        );
+
+    } catch (error) {
+
+      return res.status(200).json({
+        success: false,
+        step: "REDIRECT",
+        url: redirectUrl,
+        error: error.message
+      });
+
+    }
 
     const finalUrl =
-      redirectResponse.headers.get("location");
+      redirectResponse.headers.get(
+        "location"
+      );
 
     if (!finalUrl) {
-      return res.status(502).json({
+
+      return res.status(200).json({
         success: false,
-        step: "redirect",
-        redirect_status: redirectResponse.status,
-        redirect_url: redirectUrl,
-        error: "لم يتم الحصول على Location"
+        step: "LOCATION",
+        status: redirectResponse.status,
+        url: redirectUrl,
+        error: "السيرفر لم يرجع Location"
       });
+
     }
 
-    // =========================================
-    // 7. تحليل الرابط النهائي
-    // =========================================
+    // ================================
+    // اختبار الرابط النهائي
+    // ================================
 
     let finalResponse;
 
     try {
-      finalResponse = await fetch(
-        finalUrl,
-        {
-          method: "GET",
-          redirect: "manual",
-          headers: {
-            "User-Agent": USER_AGENT,
-            "Referer": REFERER,
-            "Accept": "*/*"
-          },
-          cache: "no-store"
-        }
-      );
+
+      finalResponse =
+        await fetch(
+          finalUrl,
+          {
+            method: "GET",
+
+            redirect: "manual",
+
+            headers: {
+              "User-Agent": USER_AGENT,
+              "Referer": REFERER,
+              "Accept": "*/*"
+            },
+
+            cache: "no-store"
+          }
+        );
+
     } catch (error) {
+
       return res.status(200).json({
         success: false,
-        step: "final_request",
-        redirect_url: redirectUrl,
+        step: "FINAL_REQUEST",
         final_url: finalUrl,
         error: error.message
       });
+
     }
 
-    // =========================================
-    // 8. قراءة معلومات الرابط النهائي
-    // =========================================
-
-    const status = finalResponse.status;
+    // ================================
+    // Headers
+    // ================================
 
     const contentType =
-      finalResponse.headers.get("content-type");
+      finalResponse.headers.get(
+        "content-type"
+      );
 
     const server =
-      finalResponse.headers.get("server");
+      finalResponse.headers.get(
+        "server"
+      );
 
     const cfRay =
-      finalResponse.headers.get("cf-ray");
+      finalResponse.headers.get(
+        "cf-ray"
+      );
 
-    const cacheStatus =
-      finalResponse.headers.get("cf-cache-status");
-
-    // =========================================
-    // 9. محاولة قراءة M3U8
-    // =========================================
-
-    let playlistPreview = "";
-
-    if (
-      status >= 200 &&
-      status < 300
-    ) {
-      try {
-        const text = await finalResponse.text();
-
-        playlistPreview = text.substring(0, 500);
-      } catch {
-        playlistPreview = "";
-      }
-    }
-
-    // =========================================
-    // 10. تحديد حالة الرابط
-    // =========================================
+    // ================================
+    // النتيجة
+    // ================================
 
     let diagnosis;
 
-    if (status === 200) {
+    if (
+      finalResponse.status === 200
+    ) {
+
       diagnosis =
-        "الرابط يعمل والسيرفر يرجع HTTP 200";
-    } else if (status === 403) {
+        "الرابط النهائي يرجع HTTP 200";
+
+    } else if (
+      finalResponse.status === 403
+    ) {
+
       diagnosis =
         "السيرفر رفض الطلب HTTP 403";
-    } else if (status === 404) {
+
+    } else if (
+      finalResponse.status === 521
+    ) {
+
       diagnosis =
-        "الرابط غير موجود HTTP 404";
-    } else if (status === 521) {
+        "Cloudflare لا يستطيع الوصول إلى Origin - HTTP 521";
+
+    } else if (
+      finalResponse.status === 522
+    ) {
+
       diagnosis =
-        "Cloudflare لا يستطيع الاتصال بالسيرفر الأصلي HTTP 521";
-    } else if (status === 522) {
+        "Cloudflare timeout - HTTP 522";
+
+    } else if (
+      finalResponse.status === 523
+    ) {
+
       diagnosis =
-        "Cloudflare انتهت مهلة الاتصال بالسيرفر الأصلي HTTP 522";
-    } else if (status === 523) {
-      diagnosis =
-        "Cloudflare لا يستطيع الوصول إلى Origin HTTP 523";
+        "Cloudflare لا يستطيع الوصول إلى Origin - HTTP 523";
+
     } else {
+
       diagnosis =
-        `السيرفر رجع HTTP ${status}`;
+        `HTTP ${finalResponse.status}`;
+
     }
 
-    // =========================================
-    // 11. منع التخزين المؤقت
-    // =========================================
-
-    res.setHeader(
-      "Cache-Control",
-      "no-store, no-cache, must-revalidate"
-    );
-
-    res.setHeader(
-      "Pragma",
-      "no-cache"
-    );
-
-    res.setHeader(
-      "Expires",
-      "0"
-    );
+    // ================================
+    // CORS + Cache
+    // ================================
 
     res.setHeader(
       "Access-Control-Allow-Origin",
       "*"
     );
 
-    // =========================================
-    // 12. النتيجة
-    // =========================================
+    res.setHeader(
+      "Cache-Control",
+      "no-store"
+    );
+
+    // ================================
+    // Response
+    // ================================
 
     return res.status(200).json({
-      success: status === 200,
 
-      channel_id: String(channelId),
+      success:
+        finalResponse.status === 200,
 
-      redirect_url: redirectUrl,
+      channel_id:
+        String(channelId),
 
-      final_url: finalUrl,
+      redirect_url:
+        redirectUrl,
 
-      final_status: status,
+      final_url:
+        finalUrl,
 
-      content_type: contentType,
+      final_status:
+        finalResponse.status,
 
-      server: server,
+      content_type:
+        contentType,
 
-      cloudflare_ray: cfRay,
+      server:
+        server,
 
-      cloudflare_cache: cacheStatus,
+      cloudflare_ray:
+        cfRay,
 
-      diagnosis: diagnosis,
+      diagnosis:
+        diagnosis
 
-      playlist_preview: playlistPreview
     });
 
   } catch (error) {
-    return res.status(500).json({
+
+    return res.status(200).json({
+
       success: false,
-      step: "server",
-      error: error.message
+
+      step: "UNKNOWN",
+
+      error:
+        error?.message ||
+        String(error),
+
+      stack:
+        error?.stack ||
+        null
+
     });
+
   }
+
 }
-
-بعد النشر افتح:
-
-https://YOUR-DOMAIN.vercel.app/api/channel?id=4
-
-مثلاً إذا ظهر:
-
-{
-  "final_status": 521,
-  "diagnosis": "Cloudflare لا يستطيع الاتصال بالسيرفر الأصلي HTTP 521"
-}
-
-فالمشكلة من السيرفر الأصلي نفسه، وليس من JavaScript.
-
-أما إذا ظهر:
-
-{
-  "final_status": 200,
-  "content_type": "application/vnd.apple.mpegurl",
-  "playlist_preview": "#EXTM3U..."
-}
-
-فالرابط يوصل فعلياً إلى الـM3U8، وساعتها نركز على المشغل أو طلبات الـsegments.
